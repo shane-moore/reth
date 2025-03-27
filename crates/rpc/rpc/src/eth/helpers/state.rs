@@ -1,7 +1,8 @@
 //! Contains RPC handler implementations specific to state.
 
+use reth_chainspec::ChainSpecProvider;
 use reth_chainspec::EthereumHardforks;
-use reth_provider::{BlockReader, ChainSpecProvider, StateProviderFactory};
+use reth_storage_api::{BlockReader, StateProviderFactory};
 use reth_transaction_pool::TransactionPool;
 
 use reth_rpc_eth_api::{

@@ -1,10 +1,9 @@
 use alloy_primitives::U256;
+use reth_chainspec::ChainSpecProvider;
 use reth_chainspec::EthereumHardforks;
 use reth_network_api::NetworkInfo;
-use reth_provider::{
-    BlockNumReader, BlockReader, ChainSpecProvider, ProviderTx, StageCheckpointReader,
-};
 use reth_rpc_eth_api::{helpers::EthApiSpec, RpcNodeCore};
+use reth_storage_api::{BlockNumReader, BlockReader, ProviderTx, StageCheckpointReader};
 
 use crate::EthApi;
 
