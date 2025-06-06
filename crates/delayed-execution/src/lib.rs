@@ -28,6 +28,7 @@ impl DelayedExecutionOutcome {
     /// Derive the outcome from an executed block.
     pub fn from_executed_block<N: reth_primitives_traits::NodePrimitives>(
         block: &reth_chain_state::ExecutedBlockWithTrieUpdates<N>,
+        last_state_root: B256,
     ) -> Self {
         use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
         use reth_primitives_traits::{proofs::{calculate_transaction_root, calculate_receipt_root}, Receipt};
@@ -45,8 +46,7 @@ impl DelayedExecutionOutcome {
         let requests = block.execution_outcome().requests.get(0).cloned().unwrap_or_default();
         let last_requests_hash = requests.requests_hash();
 
-        // Use the post-execution state root recorded in the header.
-        let last_state_root = block.recovered_block().header().state_root();
+
 
         Self {
             last_transactions_root,

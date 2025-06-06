@@ -125,7 +125,8 @@ impl<N: NodePrimitives> TreeState<N> {
 
         self.blocks_by_hash.insert(hash, executed.clone());
 
-        let outcome = Arc::new(DelayedExecutionOutcome::from_executed_block(&executed));
+        let last_state_root = executed.recovered_block().header().state_root();
+        let outcome = Arc::new(DelayedExecutionOutcome::from_executed_block(&executed, last_state_root));
         self.delayed_outcomes.insert(hash, (block_number, outcome));
 
         self.blocks_by_number.entry(block_number).or_default().push(executed);
