@@ -6,7 +6,24 @@ use alloy_consensus::{
 use alloy_eips::{calc_next_block_base_fee, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
 use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_consensus::ConsensusError;
-use reth_ethereum_consensus::DelayedHeaderFields;
+use alloy_primitives::{Bloom, B256};
+
+/// Placeholder trait exposing delayed execution header fields required for
+/// EIP-7886 validation. Default implementations return zero values until the
+/// header type provides them.
+pub trait DelayedHeaderFields {
+    fn pre_state_root(&self) -> B256 { B256::ZERO }
+    fn parent_transactions_root(&self) -> B256 { B256::ZERO }
+    fn parent_receipt_root(&self) -> B256 { B256::ZERO }
+    fn parent_bloom(&self) -> Bloom { Bloom::ZERO }
+    fn parent_requests_hash(&self) -> B256 { B256::ZERO }
+    fn parent_execution_reverted(&self) -> bool { false }
+}
+
+impl<H: BlockHeader> DelayedHeaderFields for H {}
+
+/// Activation timestamp for the Glamsterdam fork.
+pub const GLAMSTERDAM_TIMESTAMP: u64 = 0;
 use reth_primitives_traits::{
     constants::MAXIMUM_GAS_LIMIT_BLOCK, Block, BlockBody, BlockHeader, GotExpected, SealedBlock,
     SealedHeader,

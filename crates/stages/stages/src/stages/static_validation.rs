@@ -3,7 +3,7 @@ use reth_consensus::{ConsensusError, FullConsensus};
 use reth_delayed_execution::DelayedExecutionOutcome;
 use reth_provider::{
     BlockReader, HeaderProvider, ProviderError, StateProviderFactory, DBProvider,
-    LatestStateProviderRef,
+    LatestStateProviderRef, HashedPostStateProvider, StateReader,
 };
 use reth_primitives_traits::{NodePrimitives, Block};
 use reth_stages_api::{
@@ -32,7 +32,9 @@ where
         + BlockReader<Block=<E::Primitives as NodePrimitives>::Block,
                       Header=<E::Primitives as NodePrimitives>::BlockHeader>
         + HeaderProvider
-        + StateProviderFactory,
+        + StateProviderFactory
+        + HashedPostStateProvider
+        + StateReader<Receipt = <E::Primitives as NodePrimitives>::Receipt>,
 {
     fn id(&self) -> StageId { StageId::StaticValidation }
 
@@ -56,7 +58,11 @@ where
             let parent_header = provider
                 .sealed_header(parent_hash.into())?
                 .ok_or_else(|| ProviderError::HeaderNotFound(parent_hash.into()))?;
-            let parent_state_root = parent_header.state_root();
+            let parent_state = provider
+                .get_state(parent_header.number())?
+                .ok_or_else(|| ProviderError::StateForNumberNotFound(parent_header.number()))?;
+            let hashed = provider.hashed_post_state(&parent_state.bundle);
+            let parent_state_root = LatestStateProviderRef::new(provider).state_root(hashed)?;
             let parent_outcome = DelayedExecutionOutcome::from_header(parent_header.header());
             let state = LatestStateProviderRef::new(provider);
             if let Err(err) = validate_parent_delayed_execution(&block, parent_state_root, &parent_outcome, &state) {

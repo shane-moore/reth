@@ -14,6 +14,7 @@ use reth_provider::{
     BlockHashReader, BlockReader, DBProvider, ExecutionOutcome, HeaderProvider,
     LatestStateProviderRef, OriginalValuesKnown, ProviderError, StateCommitmentProvider,
     StateWriter, StaticFileProviderFactory, StatsReader, StorageLocation, TransactionVariant,
+    HashedPostStateProvider, StateReader,
 };
 use reth_revm::database::{states::bundle_state::BundleRetention, State, StateProviderDatabase};
 use alloy_eips::eip7685::Requests;
@@ -332,7 +333,9 @@ where
         + StatsReader
         + BlockHashReader
         + StateWriter<Receipt = <E::Primitives as NodePrimitives>::Receipt>
-        + StateCommitmentProvider,
+        + StateCommitmentProvider
+        + HashedPostStateProvider
+        + StateReader<Receipt = <E::Primitives as NodePrimitives>::Receipt>,
 {
     /// Return the id of the stage
     fn id(&self) -> StageId {
@@ -372,9 +375,17 @@ where
                 let parent_header = provider
                     .sealed_header((start_block - 1).into())?
                     .ok_or_else(|| ProviderError::HeaderNotFound((start_block - 1).into()))?;
-                self.last_state_root = Some(parent_header.state_root());
+
+                let parent_state = provider
+                    .get_state(start_block - 1)?
+                    .ok_or_else(|| ProviderError::StateForNumberNotFound(start_block - 1))?;
+                let hashed = provider.hashed_post_state(&parent_state.bundle);
+                let parent_state_root = LatestStateProviderRef::new(provider)
+                    .state_root(hashed)?;
+
+                self.last_state_root = Some(parent_state_root);
                 let mut outcome = DelayedExecutionOutcome::from_header(parent_header.header());
-                outcome.last_state_root = parent_header.state_root();
+                outcome.last_state_root = parent_state_root;
                 self.last_outcome = Some(outcome);
             }
         }
@@ -457,6 +468,9 @@ where
             new_db.merge_transitions(BundleRetention::Reverts);
             db = new_db;
 
+            let hashed = provider.hashed_post_state(&db.bundle_state);
+            let post_state_root = LatestStateProviderRef::new(provider).state_root(hashed)?;
+
             if let Err(err) = self.consensus.validate_block_post_execution(&block, &exec_result) {
                 return Err(StageError::Block {
                     block: Box::new(block.block_with_parent()),
@@ -468,8 +482,8 @@ where
             if exec_result.gas_used != block.header().gas_used() {
                 outcome.last_execution_reverted = true;
             }
-            outcome.last_state_root = block.header().state_root();
-            self.last_state_root = Some(outcome.last_state_root);
+            outcome.last_state_root = post_state_root;
+            self.last_state_root = Some(post_state_root);
             self.last_outcome = Some(outcome);
 
             results.push(exec_result);
