@@ -7568,10 +7568,12 @@ dependencies = [
 name = "reth-delayed-execution"
 version = "1.4.7"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
  "reth-chain-state",
  "reth-primitives-traits",
+ "reth-trie-common",
  "serde",
 ]
 
