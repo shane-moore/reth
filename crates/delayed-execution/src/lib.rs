@@ -4,7 +4,7 @@
 //! validated only when executing the _next_ block (EIP-7886).
 
 use alloy_primitives::{Bloom, B256};
-use reth_primitives_traits::AlloyBlockHeader;
+use reth_primitives_traits::{AlloyBlockHeader, block::body::BlockBody};
 use serde::{Deserialize, Serialize};
 
 /// Execution results that are validated when the child block executes.
@@ -30,13 +30,23 @@ impl DelayedExecutionOutcome {
         block: &reth_chain_state::ExecutedBlockWithTrieUpdates<N>,
     ) -> Self {
         use alloy_eips::eip7685::EMPTY_REQUESTS_HASH;
+        use reth_primitives_traits::{proofs::{calculate_transaction_root, calculate_receipt_root}, Receipt};
 
-        let header = block.recovered_block().header();
-        let last_transactions_root = header.transactions_root();
-        let last_receipt_root = header.receipts_root();
-        let last_block_logs_bloom = header.logs_bloom();
-        let last_requests_hash = header.requests_hash().unwrap_or(EMPTY_REQUESTS_HASH);
-        let last_state_root = header.state_root();
+        // Compute the transactions root from the block body.
+        let last_transactions_root = calculate_transaction_root(block.recovered_block().body().transactions());
+
+        // Receipts for this block.
+        let receipts = &block.execution_outcome().receipts[0];
+        use alloy_consensus::TxReceipt;
+        let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
+        let last_receipt_root = calculate_receipt_root(&receipts_with_bloom);
+        let last_block_logs_bloom = receipts_with_bloom.iter().fold(Bloom::ZERO, |b, r| b | r.bloom_ref());
+
+        let requests = block.execution_outcome().requests.get(0).cloned().unwrap_or_default();
+        let last_requests_hash = requests.requests_hash();
+
+        // Use the post-execution state root recorded in the header.
+        let last_state_root = block.recovered_block().header().state_root();
 
         Self {
             last_transactions_root,

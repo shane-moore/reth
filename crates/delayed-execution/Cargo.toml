@@ -15,6 +15,8 @@ alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-eips.workspace = true
 reth-chain-state.workspace = true
 reth-primitives-traits.workspace = true
+reth-trie-common.workspace = true
+alloy-consensus.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 [features]
