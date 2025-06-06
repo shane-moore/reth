@@ -17,7 +17,8 @@ use reth_provider::{
 };
 use reth_revm::database::{states::bundle_state::BundleRetention, State, StateProviderDatabase};
 use alloy_eips::eip7685::Requests;
-use alloy_primitives::U256;
+use alloy_primitives::{B256, U256};
+use reth_delayed_execution::DelayedExecutionOutcome;
 use revm::database::Database;
 use reth_evm::delayed::{
     begin_transaction, commit_transaction, deduct_max_tx_fee_from_sender_balance,
@@ -99,6 +100,10 @@ where
     exex_manager_handle: ExExManagerHandle<E::Primitives>,
     /// Executor metrics.
     metrics: ExecutorMetrics,
+    /// Cached delayed execution outcome of the previously executed block.
+    last_outcome: Option<DelayedExecutionOutcome>,
+    /// Post state root of the previously executed block.
+    last_state_root: Option<B256>,
 }
 
 impl<E> ExecutionStage<E>
@@ -122,6 +127,8 @@ where
             post_unwind_commit_input: None,
             exex_manager_handle,
             metrics: ExecutorMetrics::default(),
+            last_outcome: None,
+            last_state_root: None,
         }
     }
 
@@ -360,6 +367,16 @@ where
             .without_state_clear()
             .build();
 
+        if self.last_outcome.is_none() {
+            if start_block > 0 {
+                let parent_header = provider
+                    .sealed_header((start_block - 1).into())?
+                    .ok_or_else(|| ProviderError::HeaderNotFound((start_block - 1).into()))?;
+                self.last_state_root = Some(parent_header.state_root());
+                self.last_outcome = Some(DelayedExecutionOutcome::from_header(parent_header.header()));
+            }
+        }
+
         // Progress tracking
         let mut stage_progress = start_block;
         let mut stage_checkpoint = execution_checkpoint(
@@ -395,6 +412,23 @@ where
                 .recovered_block(block_number.into(), TransactionVariant::NoHash)?
                 .ok_or_else(|| ProviderError::HeaderNotFound(block_number.into()))?;
 
+            if let (Some(parent_state_root), Some(parent_outcome)) =
+                (self.last_state_root, self.last_outcome.as_ref())
+            {
+                let state = LatestStateProviderRef::new(provider);
+                if let Err(err) = validate_parent_delayed_execution(
+                    &block,
+                    parent_state_root,
+                    parent_outcome,
+                    &state,
+                ) {
+                    return Err(StageError::Block {
+                        block: Box::new(block.block_with_parent()),
+                        error: BlockErrorKind::Validation(err),
+                    });
+                }
+            }
+
             fetch_block_duration += fetch_block_start.elapsed();
 
             cumulative_gas += block.header().gas_used();
@@ -427,6 +461,14 @@ where
                     error: BlockErrorKind::Validation(err),
                 })
             }
+
+            let mut outcome = DelayedExecutionOutcome::from_header(block.header());
+            if exec_result.gas_used != block.header().gas_used() {
+                outcome.last_execution_reverted = true;
+            }
+            self.last_state_root = Some(block.header().state_root());
+            self.last_outcome = Some(outcome);
+
             results.push(exec_result);
 
             execution_duration += execute_start.elapsed();
