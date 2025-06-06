@@ -24,6 +24,7 @@ use reth_chain_state::{
     MemoryOverlayStateProvider, NewCanonicalChain,
 };
 use reth_consensus::{Consensus, FullConsensus};
+use reth_ethereum_consensus::validate_parent_delayed_execution;
 pub use reth_engine_primitives::InvalidBlockHook;
 use reth_engine_primitives::{
     BeaconConsensusEngineEvent, BeaconEngineMessage, BeaconOnNewPayloadError, EngineValidator,
@@ -31,6 +32,7 @@ use reth_engine_primitives::{
 };
 use reth_errors::{ConsensusError, ProviderResult};
 use reth_evm::{ConfigureEvm, Evm, SpecFor};
+use alloy_primitives::U256;
 use reth_payload_builder::PayloadBuilderHandle;
 use reth_payload_primitives::{EngineApiMessageVersion, PayloadBuilderAttributes, PayloadTypes};
 use reth_primitives_traits::{
@@ -84,6 +86,14 @@ pub use payload_processor::*;
 pub use persistence_state::PersistenceState;
 pub use reth_engine_primitives::TreeConfig;
 use reth_evm::execute::BlockExecutionOutput;
+use reth_evm::delayed::{
+    begin_transaction, commit_transaction, deduct_max_tx_fee_from_sender_balance,
+    process_transaction, rollback_transaction,
+};
+use revm_database::BundleState;
+use revm::database::states::bundle_state::BundleRetention;
+use alloy_eips::eip7685::Requests;
+use reth_ethereum_consensus::GLAMSTERDAM_TIMESTAMP;
 
 pub mod state;
 
@@ -345,7 +355,7 @@ where
             precompile_cache_map.clone(),
         );
 
-        Self {
+        let mut this = Self {
             provider,
             consensus,
             payload_validator,
@@ -365,7 +375,15 @@ where
             payload_processor,
             evm_config,
             precompile_cache_map,
-        }
+        };
+
+        // Ensure the delayed execution outcome for the canonical head is
+        // available on startup. This covers restarts where the in-memory map is
+        // empty and the builder requires the outcome immediately.
+        let head = this.state.tree_state.current_canonical_head.hash;
+        let _ = this.state.tree_state.ensure_delayed_outcome(&this.provider, head);
+
+        this
     }
 
     /// Sets the invalid block hook.
@@ -2028,6 +2046,8 @@ where
         // validate block consensus rules
         ensure_ok!(self.validate_block(&block));
 
+
+
         trace!(target: "engine::tree", block=?block_num_hash, parent=?block.parent_hash(), "Fetching block state provider");
         let Some(provider_builder) = ensure_ok!(self.state_provider_builder(block.parent_hash()))
         else {
@@ -2066,6 +2086,22 @@ where
         }
 
         let state_provider = ensure_ok!(provider_builder.build());
+
+        if let Some(outcome) = ensure_ok!(
+            self.state
+                .tree_state
+                .ensure_delayed_outcome(&self.provider, block.parent_hash())
+        ) {
+            if let Err(e) = validate_parent_delayed_execution(
+                &block,
+                parent_block.state_root(),
+                outcome,
+                &state_provider,
+            ) {
+                warn!(target: "engine::tree", ?block, "Delayed execution validation failed: {e}");
+                return Err((e.into(), block))
+            }
+        }
 
         // We only run the parallel state root if we are not currently persisting any blocks or
         // persisting blocks that are all ancestors of the one we are executing.
@@ -2297,6 +2333,33 @@ where
             .with_bundle_update()
             .without_state_clear()
             .build();
+        // Take a snapshot for EIP-7886 if the block is after the Glamsterdam fork
+        let checkpoint = if block.header().timestamp() >= GLAMSTERDAM_TIMESTAMP {
+            Some(begin_transaction(&mut db))
+        } else {
+            None
+        };
+
+        let mut tx_limit = 0usize;
+        let mut gas_used = 0u64;
+        let gas_limit = block.header().gas_limit();
+        let base_fee = block.base_fee_per_gas().unwrap_or_default();
+        let excess_blob_gas = block.excess_blob_gas().unwrap_or_default();
+
+        if checkpoint.is_some() {
+            for tx in block.transactions_recovered() {
+                if !process_transaction(&mut gas_used, tx.gas_limit(), gas_limit) {
+                    break;
+                }
+                deduct_max_tx_fee_from_sender_balance(
+                    &mut db,
+                    U256::from(base_fee),
+                    U256::from(excess_blob_gas),
+                    tx.tx(),
+                );
+                tx_limit += 1;
+            }
+        }
         let mut executor = self.evm_config.executor_for_block(&mut db, block);
 
         if self.config.precompile_cache_enabled() {
@@ -2310,11 +2373,42 @@ where
         }
 
         let execution_start = Instant::now();
-        let output = self.metrics.executor.execute_metered(
-            executor,
-            block,
-            Box::new(handle.state_hook()),
-        )?;
+        let output = match self.metrics.executor.metered_one(block, |_| {
+            let mut executor = executor.with_state_hook(Some(Box::new(handle.state_hook())));
+            executor.apply_pre_execution_changes()?;
+            let mut idx = 0usize;
+            for tx in block.transactions_recovered() {
+                if checkpoint.is_some() && idx >= tx_limit { break; }
+                executor.execute_transaction(tx)?;
+                idx += 1;
+            }
+            executor.finish().map(|(evm, result)| (evm.into_db(), result))
+        }) {
+            Ok((mut inner_db, result)) => {
+                inner_db.merge_transitions(BundleRetention::Reverts);
+                let mut out = BlockExecutionOutput { result, state: inner_db.take_bundle() };
+                if let Some(cp) = checkpoint {
+                    let declared = block.header().gas_used();
+                    let actual = out.result.gas_used;
+                    if actual != declared {
+                        rollback_transaction(&mut db, cp);
+                        out.result.receipts.clear();
+                        out.result.requests = Requests::default();
+                        out.result.gas_used = 0;
+                        out.state = BundleState::default();
+                    } else {
+                        commit_transaction(&mut db);
+                    }
+                }
+                out
+            }
+            Err(err) => {
+                if let Some(checkpoint) = checkpoint {
+                    rollback_transaction(&mut db, checkpoint);
+                }
+                return Err(err.into());
+            }
+        };
         let execution_finish = Instant::now();
         let execution_time = execution_finish.duration_since(execution_start);
         debug!(target: "engine::tree", elapsed = ?execution_time, number=?block.number(), "Executed block");

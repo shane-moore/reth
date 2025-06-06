@@ -657,6 +657,7 @@ impl<N: NodePrimitives> BlockState<N> {
         receipts.first().cloned().unwrap_or_default()
     }
 
+
     /// Returns a vector of __parent__ `BlockStates`.
     ///
     /// The block state order in the output vector is newest to oldest (highest to lowest):

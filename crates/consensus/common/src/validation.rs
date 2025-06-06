@@ -6,6 +6,7 @@ use alloy_consensus::{
 use alloy_eips::{calc_next_block_base_fee, eip4844::DATA_GAS_PER_BLOB, eip7840::BlobParams};
 use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_consensus::ConsensusError;
+use reth_ethereum_consensus::DelayedHeaderFields;
 use reth_primitives_traits::{
     constants::MAXIMUM_GAS_LIMIT_BLOCK, Block, BlockBody, BlockHeader, GotExpected, SealedBlock,
     SealedHeader,
@@ -260,7 +261,7 @@ pub fn validate_against_parent_hash_number<H: BlockHeader>(
 /// Validates the base fee against the parent and EIP-1559 rules.
 #[inline]
 pub fn validate_against_parent_eip1559_base_fee<
-    H: BlockHeader,
+    H: BlockHeader + DelayedHeaderFields,
     ChainSpec: EthChainSpec + EthereumHardforks,
 >(
     header: &H,
@@ -276,11 +277,12 @@ pub fn validate_against_parent_eip1559_base_fee<
         {
             alloy_eips::eip1559::INITIAL_BASE_FEE
         } else {
-            // This BaseFeeMissing will not happen as previous blocks are checked to have
-            // them.
             let base_fee = parent.base_fee_per_gas().ok_or(ConsensusError::BaseFeeMissing)?;
+
+            let parent_gas_used = if header.parent_execution_reverted() { 0 } else { parent.gas_used() };
+
             calc_next_block_base_fee(
-                parent.gas_used(),
+                parent_gas_used,
                 parent.gas_limit(),
                 base_fee,
                 chain_spec.base_fee_params_at_timestamp(header.timestamp()),

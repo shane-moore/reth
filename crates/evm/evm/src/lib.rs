@@ -39,6 +39,7 @@ use revm::{context::TxEnv, database::State};
 pub mod either;
 /// EVM environment configuration.
 pub mod execute;
+pub mod delayed;
 
 mod aliases;
 pub use aliases::*;

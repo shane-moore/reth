@@ -7,7 +7,8 @@ use alloy_primitives::{
     BlockNumber, B256,
 };
 use reth_chain_state::{EthPrimitives, ExecutedBlockWithTrieUpdates};
-use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedBlock};
+use reth_delayed_execution::DelayedExecutionOutcome;
+use reth_primitives_traits::{AlloyBlockHeader, NodePrimitives, SealedBlock, Block};
 use reth_trie::updates::TrieUpdates;
 use std::{
     collections::{btree_map, hash_map, BTreeMap, VecDeque},
@@ -48,6 +49,8 @@ pub struct TreeState<N: NodePrimitives = EthPrimitives> {
     ///
     /// Contains the block number for easy removal.
     pub(crate) persisted_trie_updates: HashMap<B256, (BlockNumber, Arc<TrieUpdates>)>,
+    /// Map of hash to delayed execution outcomes for persisted canonical blocks.
+    pub(crate) delayed_outcomes: HashMap<B256, (BlockNumber, Arc<DelayedExecutionOutcome>)>,
     /// Currently tracked canonical head of the chain.
     pub(crate) current_canonical_head: BlockNumHash,
     /// The engine API variant of this handler
@@ -63,6 +66,7 @@ impl<N: NodePrimitives> TreeState<N> {
             current_canonical_head,
             parent_to_child: HashMap::default(),
             persisted_trie_updates: HashMap::default(),
+            delayed_outcomes: HashMap::default(),
             engine_kind,
         }
     }
@@ -120,6 +124,9 @@ impl<N: NodePrimitives> TreeState<N> {
         }
 
         self.blocks_by_hash.insert(hash, executed.clone());
+
+        let outcome = Arc::new(DelayedExecutionOutcome::from_executed_block(&executed));
+        self.delayed_outcomes.insert(hash, (block_number, outcome));
 
         self.blocks_by_number.entry(block_number).or_default().push(executed);
 
@@ -237,6 +244,8 @@ impl<N: NodePrimitives> TreeState<N> {
             self.current_canonical_head.number.saturating_sub(retention_blocks);
 
         self.persisted_trie_updates
+            .retain(|_, (block_number, _)| *block_number > earliest_block_to_retain);
+        self.delayed_outcomes
             .retain(|_, (block_number, _)| *block_number > earliest_block_to_retain);
     }
 
@@ -391,6 +400,37 @@ impl<N: NodePrimitives> TreeState<N> {
     /// Returns the block number of the canonical head.
     pub(crate) const fn canonical_block_number(&self) -> BlockNumber {
         self.canonical_head().number
+    }
+
+    /// Returns the delayed execution outcome for the given block hash, if any.
+    pub(crate) fn delayed_outcome(
+        &self,
+        hash: B256,
+    ) -> Option<&DelayedExecutionOutcome> {
+        self.delayed_outcomes.get(&hash).map(|(_, outcome)| outcome.as_ref())
+    }
+
+    /// Ensure that the delayed execution outcome for the given block hash is
+    /// present. If it's missing in memory, this will attempt to load the block
+    /// from the provided database `provider` and derive the outcome from its
+    /// header.
+    pub(crate) fn ensure_delayed_outcome<P>(
+        &mut self,
+        provider: &P,
+        hash: B256,
+    ) -> reth_provider::ProviderResult<Option<&DelayedExecutionOutcome>>
+    where
+        P: reth_provider::BlockReader<Block = N::Block>,
+    {
+        if self.delayed_outcomes.contains_key(&hash) {
+            return Ok(self.delayed_outcome(hash));
+        }
+
+        let Some(block) = provider.block(hash.into())? else { return Ok(None) };
+        let outcome = DelayedExecutionOutcome::from_header(block.header());
+        let number = block.header().number();
+        self.delayed_outcomes.insert(hash, (number, Arc::new(outcome)));
+        Ok(self.delayed_outcome(hash))
     }
 }
 
@@ -635,5 +675,28 @@ mod tests {
             tree_state.parent_to_child.get(&blocks[3].recovered_block().hash()),
             Some(&HashSet::from_iter([blocks[4].recovered_block().hash()]))
         );
+    }
+
+    #[test]
+    fn test_delayed_outcomes_insert_and_prune() {
+        let start_num_hash = BlockNumHash::default();
+        let mut tree_state = TreeState::new(start_num_hash, EngineApiKind::Ethereum);
+        let blocks: Vec<_> = TestBlockBuilder::eth().get_executed_blocks(1..6).collect();
+
+        for block in &blocks {
+            tree_state.insert_executed(block.clone());
+            let outcome = tree_state
+                .delayed_outcome(block.recovered_block().hash())
+                .expect("missing outcome");
+            assert_eq!(
+                outcome.last_transactions_root,
+                block.recovered_block().header().transactions_root()
+            );
+        }
+
+        tree_state.set_canonical_head(BlockNumHash::new(100, B256::ZERO));
+        tree_state.prune_persisted_trie_updates();
+
+        assert!(tree_state.delayed_outcomes.is_empty());
     }
 }

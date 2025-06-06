@@ -7565,6 +7565,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reth-delayed-execution"
+version = "1.4.7"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "reth-chain-state",
+ "reth-primitives-traits",
+ "serde",
+]
+
+[[package]]
 name = "reth-discv4"
 version = "1.4.7"
 dependencies = [
@@ -7871,6 +7882,7 @@ dependencies = [
  "reth-consensus",
  "reth-db",
  "reth-db-common",
+ "reth-delayed-execution",
  "reth-engine-primitives",
  "reth-errors",
  "reth-ethereum-consensus",
@@ -8176,6 +8188,7 @@ dependencies = [
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
+ "reth-delayed-execution",
  "reth-ethereum-primitives",
  "reth-execution-types",
  "reth-primitives-traits",
