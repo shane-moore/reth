@@ -24,6 +24,7 @@ reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-ethereum-primitives.workspace = true
+reth-ethereum-consensus.workspace = true
 reth-provider.workspace = true
 reth-prune.workspace = true
 reth-revm.workspace = true
@@ -33,6 +34,7 @@ reth-trie-db.workspace = true
 reth-trie-parallel.workspace = true
 reth-trie-sparse = { workspace = true, features = ["std", "metrics"] }
 reth-trie.workspace = true
+reth-delayed-execution.workspace = true
 
 # alloy
 alloy-evm.workspace = true

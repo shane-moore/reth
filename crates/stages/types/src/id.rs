@@ -11,6 +11,7 @@ pub enum StageId {
     Headers,
     Bodies,
     SenderRecovery,
+    StaticValidation,
     Execution,
     PruneSenderRecovery,
     MerkleUnwind,
@@ -28,10 +29,11 @@ pub enum StageId {
 
 impl StageId {
     /// All supported Stages
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Headers,
         Self::Bodies,
         Self::SenderRecovery,
+        Self::StaticValidation,
         Self::Execution,
         Self::PruneSenderRecovery,
         Self::MerkleUnwind,
@@ -46,8 +48,9 @@ impl StageId {
     ];
 
     /// Stages that require state.
-    pub const STATE_REQUIRED: [Self; 9] = [
+    pub const STATE_REQUIRED: [Self; 10] = [
         Self::Execution,
+        Self::StaticValidation,
         Self::PruneSenderRecovery,
         Self::MerkleUnwind,
         Self::AccountHashing,
@@ -66,6 +69,7 @@ impl StageId {
             Self::Headers => "Headers",
             Self::Bodies => "Bodies",
             Self::SenderRecovery => "SenderRecovery",
+            Self::StaticValidation => "StaticValidation",
             Self::Execution => "Execution",
             Self::PruneSenderRecovery => "PruneSenderRecovery",
             Self::MerkleUnwind => "MerkleUnwind",

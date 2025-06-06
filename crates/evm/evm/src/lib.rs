@@ -39,6 +39,8 @@ use revm::{context::TxEnv, database::State};
 pub mod either;
 /// EVM environment configuration.
 pub mod execute;
+#[cfg(feature = "delayed")]
+pub mod delayed;
 
 mod aliases;
 pub use aliases::*;

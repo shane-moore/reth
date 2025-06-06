@@ -23,6 +23,8 @@ mod s3;
 mod sender_recovery;
 /// The transaction lookup stage
 mod tx_lookup;
+/// Static validation stage for EIP-7886
+mod static_validation;
 
 pub use bodies::*;
 pub use execution::*;
@@ -37,6 +39,7 @@ pub use prune::*;
 pub use s3::*;
 pub use sender_recovery::*;
 pub use tx_lookup::*;
+pub use static_validation::*;
 
 mod utils;
 use utils::*;

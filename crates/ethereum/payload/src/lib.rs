@@ -329,9 +329,13 @@ where
 
     let BlockBuilderOutcome { execution_result, block, .. } = builder.finish(&state_provider)?;
 
-    let requests = chain_spec
-        .is_prague_active_at_timestamp(attributes.timestamp)
-        .then_some(execution_result.requests);
+    let requests = if chain_spec.is_prague_active_at_timestamp(attributes.timestamp)
+        && !execution_result.requests.is_empty()
+    {
+        Some(execution_result.requests)
+    } else {
+        None
+    };
 
     let sealed_block = Arc::new(block.sealed_block().clone());
     debug!(target: "payload_builder", id=%attributes.id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");

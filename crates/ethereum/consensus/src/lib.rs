@@ -29,7 +29,10 @@ use reth_primitives_traits::{
 };
 
 mod validation;
-pub use validation::validate_block_post_execution;
+pub use validation::{
+    validate_block_post_execution, validate_parent_delayed_execution,
+    DelayedHeaderFields, GLAMSTERDAM_TIMESTAMP,
+};
 
 /// Ethereum beacon consensus
 ///
