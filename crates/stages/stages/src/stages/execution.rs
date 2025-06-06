@@ -6,7 +6,7 @@ use reth_config::config::ExecutionConfig;
 use reth_consensus::{ConsensusError, FullConsensus};
 use reth_db::{static_file::HeaderMask, tables};
 use reth_evm::{execute::Executor, metrics::ExecutorMetrics, ConfigureEvm};
-use reth_execution_types::Chain;
+use reth_execution_types::{BlockExecutionResult, Chain};
 use reth_exex::{ExExManagerHandle, ExExNotification, ExExNotificationSource};
 use reth_primitives_traits::{format_gas_throughput, Block, BlockBody, NodePrimitives};
 use reth_provider::{
@@ -15,13 +15,21 @@ use reth_provider::{
     LatestStateProviderRef, OriginalValuesKnown, ProviderError, StateCommitmentProvider,
     StateWriter, StaticFileProviderFactory, StatsReader, StorageLocation, TransactionVariant,
 };
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::database::{states::bundle_state::BundleRetention, State, StateProviderDatabase};
+use alloy_eips::eip7685::Requests;
+use alloy_primitives::U256;
+use revm::database::Database;
+use reth_evm::delayed::{
+    begin_transaction, commit_transaction, deduct_max_tx_fee_from_sender_balance,
+    process_transaction, rollback_transaction,
+};
 use reth_stages_api::{
     BlockErrorKind, CheckpointBlockRange, EntitiesCheckpoint, ExecInput, ExecOutput,
     ExecutionCheckpoint, ExecutionStageThresholds, Stage, StageCheckpoint, StageError, StageId,
     UnwindInput, UnwindOutput,
 };
 use reth_static_file_types::StaticFileSegment;
+use reth_ethereum_consensus::GLAMSTERDAM_TIMESTAMP;
 use std::{
     cmp::Ordering,
     ops::RangeInclusive,
@@ -67,7 +75,7 @@ pub struct ExecutionStage<E>
 where
     E: ConfigureEvm,
 {
-    /// The stage's internal block executor
+    /// The EVM configuration used for block execution
     evm_config: E,
     /// The consensus instance for validating blocks.
     consensus: Arc<dyn FullConsensus<E::Primitives, Error = ConsensusError>>,
@@ -248,6 +256,62 @@ where
 
         Ok(())
     }
+
+    /// Execute a single block with optional delayed execution snapshot logic.
+    fn execute_block_with_snapshot<DB>(
+        &self,
+        db: &mut State<DB>,
+        block: &RecoveredBlock<<E::Primitives as NodePrimitives>::Block>,
+    ) -> Result<(State<DB>, BlockExecutionResult<<E::Primitives as NodePrimitives>::Receipt>), StageError>
+    where
+        DB: Database,
+    {
+        let mut tx_limit = 0usize;
+        let mut gas_used = 0u64;
+        let gas_limit = block.header().gas_limit();
+        let base_fee = block.base_fee_per_gas().unwrap_or_default();
+        let excess_blob_gas = block.excess_blob_gas().unwrap_or_default();
+
+        let checkpoint = begin_transaction(db);
+        for tx in block.transactions_recovered() {
+            if !process_transaction(&mut gas_used, tx.gas_limit(), gas_limit) {
+                break;
+            }
+            deduct_max_tx_fee_from_sender_balance(
+                db,
+                U256::from(base_fee),
+                U256::from(excess_blob_gas),
+                tx.tx(),
+            );
+            tx_limit += 1;
+        }
+
+        let result = self.metrics.metered_one(block, |input| {
+            let mut exec = self.evm_config.executor_for_block(db, input);
+            exec.apply_pre_execution_changes()?;
+            let mut idx = 0usize;
+            for tx in input.transactions_recovered() {
+                if idx >= tx_limit { break; }
+                exec.execute_transaction(tx)?;
+                idx += 1;
+            }
+            exec.finish().map(|(evm, res)| (evm.into_db(), res))
+        })?;
+
+        let (mut inner_db, mut exec_result) = result;
+        inner_db.merge_transitions(BundleRetention::Reverts);
+
+        if exec_result.gas_used != block.header().gas_used() {
+            rollback_transaction(&mut inner_db, checkpoint);
+            exec_result.receipts.clear();
+            exec_result.requests = Requests::default();
+            exec_result.gas_used = 0;
+            inner_db.take_bundle();
+        } else {
+            commit_transaction(&mut inner_db);
+        }
+        Ok((inner_db, exec_result))
+    }
 }
 
 impl<E, Provider> Stage<Provider> for ExecutionStage<E>
@@ -290,8 +354,11 @@ where
 
         self.ensure_consistency(provider, input.checkpoint().block_number, None)?;
 
-        let db = StateProviderDatabase(LatestStateProviderRef::new(provider));
-        let mut executor = self.evm_config.batch_executor(db);
+        let mut db = State::builder()
+            .with_database(StateProviderDatabase::new(LatestStateProviderRef::new(provider)))
+            .with_bundle_update()
+            .without_state_clear()
+            .build();
 
         // Progress tracking
         let mut stage_progress = start_block;
@@ -338,20 +405,29 @@ where
             // Execute the block
             let execute_start = Instant::now();
 
-            let result = self.metrics.metered_one(&block, |input| {
-                executor.execute_one(input).map_err(|error| StageError::Block {
-                    block: Box::new(block.block_with_parent()),
-                    error: BlockErrorKind::Execution(error),
-                })
-            })?;
+            let glamsterdam = block.header().timestamp() >= GLAMSTERDAM_TIMESTAMP;
+            let (mut new_db, exec_result) = if glamsterdam {
+                self.execute_block_with_snapshot(&mut db, &block)?
+            } else {
+                self.metrics.metered_one(&block, |input| {
+                    let mut exec = self.evm_config.executor_for_block(&mut db, input);
+                    exec.apply_pre_execution_changes()?;
+                    for tx in input.transactions_recovered() {
+                        exec.execute_transaction(tx)?;
+                    }
+                    exec.finish().map(|(evm, result)| (evm.into_db(), result))
+                })?
+            };
+            new_db.merge_transitions(BundleRetention::Reverts);
+            db = new_db;
 
-            if let Err(err) = self.consensus.validate_block_post_execution(&block, &result) {
+            if let Err(err) = self.consensus.validate_block_post_execution(&block, &exec_result) {
                 return Err(StageError::Block {
                     block: Box::new(block.block_with_parent()),
                     error: BlockErrorKind::Validation(err),
                 })
             }
-            results.push(result);
+            results.push(exec_result);
 
             execution_duration += execute_start.elapsed();
 
@@ -382,7 +458,7 @@ where
             // Check if we should commit now
             if self.thresholds.is_end_of_batch(
                 block_number - start_block,
-                executor.size_hint() as u64,
+                db.bundle_state.size_hint() as u64,
                 cumulative_gas,
                 batch_start.elapsed(),
             ) {
@@ -394,7 +470,7 @@ where
         let time = Instant::now();
         let mut state = ExecutionOutcome::from_blocks(
             start_block,
-            executor.into_state().take_bundle(),
+            db.take_bundle(),
             results,
         );
         let write_preparation_duration = time.elapsed();
