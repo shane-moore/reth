@@ -40,7 +40,7 @@ use crate::{
     stages::{
         AccountHashingStage, BodyStage, ExecutionStage, FinishStage, HeaderStage,
         IndexAccountHistoryStage, IndexStorageHistoryStage, MerkleStage, PruneSenderRecoveryStage,
-        PruneStage, SenderRecoveryStage, StorageHashingStage, TransactionLookupStage,
+        PruneStage, SenderRecoveryStage, StaticValidationStage, StorageHashingStage, TransactionLookupStage,
     },
     StageSet, StageSetBuilder,
 };
@@ -363,11 +363,13 @@ impl<E, Provider> StageSet<Provider> for ExecutionStages<E>
 where
     E: ConfigureEvm + 'static,
     SenderRecoveryStage: Stage<Provider>,
+    StaticValidationStage<E>: Stage<Provider>,
     ExecutionStage<E>: Stage<Provider>,
 {
     fn builder(self) -> StageSetBuilder<Provider> {
         StageSetBuilder::default()
             .add_stage(SenderRecoveryStage::new(self.stages_config.sender_recovery))
+            .add_stage(StaticValidationStage::new(self.consensus.clone()))
             .add_stage(ExecutionStage::from_config(
                 self.evm_config,
                 self.consensus,
