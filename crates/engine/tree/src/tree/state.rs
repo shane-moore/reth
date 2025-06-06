@@ -692,6 +692,7 @@ mod tests {
                 outcome.last_transactions_root,
                 block.recovered_block().header().transactions_root()
             );
+            assert_eq!(outcome.last_state_root, block.recovered_block().header().state_root());
         }
 
         tree_state.set_canonical_head(BlockNumHash::new(100, B256::ZERO));

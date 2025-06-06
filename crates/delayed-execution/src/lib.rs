@@ -18,6 +18,8 @@ pub struct DelayedExecutionOutcome {
     pub last_block_logs_bloom: Bloom,
     /// Requests hash of the last executed block.
     pub last_requests_hash: B256,
+    /// State root of the last executed block.
+    pub last_state_root: B256,
     /// Whether the block execution reverted.
     pub last_execution_reverted: bool,
 }
@@ -34,12 +36,14 @@ impl DelayedExecutionOutcome {
         let last_receipt_root = header.receipts_root();
         let last_block_logs_bloom = header.logs_bloom();
         let last_requests_hash = header.requests_hash().unwrap_or(EMPTY_REQUESTS_HASH);
+        let last_state_root = header.state_root();
 
         Self {
             last_transactions_root,
             last_receipt_root,
             last_block_logs_bloom,
             last_requests_hash,
+            last_state_root,
             last_execution_reverted: false,
         }
     }
@@ -56,6 +60,7 @@ impl DelayedExecutionOutcome {
             last_receipt_root: header.receipts_root(),
             last_block_logs_bloom: header.logs_bloom(),
             last_requests_hash: header.requests_hash().unwrap_or(EMPTY_REQUESTS_HASH),
+            last_state_root: header.state_root(),
             last_execution_reverted: false,
         }
     }

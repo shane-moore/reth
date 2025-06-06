@@ -373,7 +373,9 @@ where
                     .sealed_header((start_block - 1).into())?
                     .ok_or_else(|| ProviderError::HeaderNotFound((start_block - 1).into()))?;
                 self.last_state_root = Some(parent_header.state_root());
-                self.last_outcome = Some(DelayedExecutionOutcome::from_header(parent_header.header()));
+                let mut outcome = DelayedExecutionOutcome::from_header(parent_header.header());
+                outcome.last_state_root = parent_header.state_root();
+                self.last_outcome = Some(outcome);
             }
         }
 
@@ -466,7 +468,8 @@ where
             if exec_result.gas_used != block.header().gas_used() {
                 outcome.last_execution_reverted = true;
             }
-            self.last_state_root = Some(block.header().state_root());
+            outcome.last_state_root = block.header().state_root();
+            self.last_state_root = Some(outcome.last_state_root);
             self.last_outcome = Some(outcome);
 
             results.push(exec_result);
